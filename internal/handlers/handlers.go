@@ -18,7 +18,7 @@ func NewStaticHandler() *StaticHandler {
 	return &StaticHandler{htmlIndexFile: "index.html"}
 }
 
-// Обработка энпоинта '/'
+// Обработка эндпоинта '/'
 // Допустим только GET метод
 func (staticHandler *StaticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 

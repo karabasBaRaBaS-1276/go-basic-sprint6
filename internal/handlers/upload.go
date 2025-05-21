@@ -1,11 +1,18 @@
 package handlers
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/Yandex-Practicum/go1fl-sprint6-final/internal/service"
 )
 
 // Структура, облуживающая запросы по файлам.
@@ -18,7 +25,7 @@ func NewFileHandler() *FileHandler {
 	return &FileHandler{fileFieldName: "myFile"}
 }
 
-// Обработка энпоинта '/upload'.
+// Обработка эндпоинта '/upload'.
 // Допустим только POST метод для загрузки файла
 func (fileHandler *FileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
@@ -31,19 +38,19 @@ func (fileHandler *FileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	// Разбираем, что к нам пришло
 	r.ParseMultipartForm(10 << 20) // ограничение не более 10 Мб
 
-	file, handler, err := r.FormFile(fileHandler.fileFieldName)
+	fileInput, handler, err := r.FormFile(fileHandler.fileFieldName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// отложенное закрытие файла
-	defer file.Close()
+	defer fileInput.Close()
 
 	log.Printf("На обработку поступил файл: '%s'; Размер: %d байт; Тип файла: %s", handler.Filename, handler.Size, handler.Header.Get("Content-Type"))
 
 	// Надо бы проверить, что данные в файле - это текст, который подходит для наших задач.
 	// По идее, можно прочитать первые несколько байт и проверить, являются ли они ASCII-символами
-	isTextData, err := isTextFile(file)
+	isTextData, err := isTextFile(fileInput)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -53,17 +60,57 @@ func (fileHandler *FileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Записываем содержимое файла в массив строк
+	// Подготовим файл для записи
+	fileResultPath := getFileNameOutput(filepath.Ext(handler.Filename))
+	log.Printf("Имя файла с результатом: %s", fileResultPath)
+	fileResult, err := os.Create(fileResultPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer fileResult.Close()
 
-	w.Header().Set("Content-Type", "application/json")
-	http.Error(w, `{"error": "Обработка работы с файлом пока не реализована"}`, http.StatusMethodNotAllowed)
+	// создаем сканер для чтения файла
+	scanner := bufio.NewScanner(fileInput)
+	// читаем файл построчно
+	lineNum := 1
+	lenByte := 0
+	converter := service.NewConverterMorse()
+	for scanner.Scan() {
+		// Так как по заданию нет ограничений на размер файла, то будем обработку делать построчно
+		log.Printf("Обработка строки с содержимым: %s", scanner.Text())
+		res := fmt.Sprintf("%s\n", converter.Process(scanner.Text())) // Риски. Каждая строка обрабатывается независимо...
+		log.Printf("Результат обработки строки: %s", res)
+		// Запишем результат в локальный файл
+		n, err := fileResult.WriteString(res)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// и в ответ
+		_, err = io.WriteString(w, res)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		lenByte += n
+		lineNum++
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 }
 
 // Вернет true если файл текстовый.
-func isTextFile(file multipart.File) (bool, error) {
+func isTextFile(fileInput multipart.File) (bool, error) {
 	buf := make([]byte, 512) // Проверяем первые 512 байт
-	nRows, err := file.Read(buf)
+	nRows, err := fileInput.Read(buf)
 	if err != nil && err != io.EOF {
+		return false, err
+	}
+	// Сбрасываем позицию чтения в начало файла
+	_, err = fileInput.Seek(0, io.SeekStart)
+	if err != nil {
 		return false, err
 	}
 	log.Printf("Первые байты файла (не более 512):\n%s", buf)
@@ -82,4 +129,13 @@ func isTextFile(file multipart.File) (bool, error) {
 	}
 	log.Printf("Первые %d байт файла выглядят как текстовые :)", nRows)
 	return true, nil
+}
+
+// Вернет имя файла для записи результата
+func getFileNameOutput(ext string) string {
+	// Подготовим файл для записи
+	res := time.Now().UTC().Format("2006-01-02T15-04-05.999999999")
+	res = strings.ReplaceAll(res, ".", "_")
+	res += ext
+	return res
 }
